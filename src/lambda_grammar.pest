@@ -1,0 +1,18 @@
+WHITESPACE = _{ " " }
+
+variable_start = _{ ASCII_ALPHA_LOWER | "_" }
+variable       = @{ variable_start ~ (ASCII_ALPHA | ASCII_DIGIT)* }
+
+parameter   = _{ variable }
+arrow       = _{ "->" | ":" }
+body        = _{ bracketed_expression }
+abstraction =  { (parameter ~ arrow ~ body) | ("λ" ~ parameter ~ "." ~ body) }
+
+function    = _{ bracketed_expression }
+argument    = _{ bracketed_expression }
+application =  { function ~ argument }
+
+expression           = _{ application | abstraction | bracketed_expression }
+bracketed_expression = _{ "(" ~ expression ~ ")" | variable }
+
+full_string = _{ SOI ~ expression ~ EOI }
