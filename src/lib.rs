@@ -1,3 +1,5 @@
+use std::mem;
+
 use pest::{Parser, iterators::Pair};
 use pest_derive::Parser;
 
@@ -5,6 +7,7 @@ use pest_derive::Parser;
 #[grammar = "lambda_grammar.pest"]
 struct LambdaParser;
 
+#[derive(Clone)]
 enum ExpressionNode {
     Variable(String),
     Application {
@@ -18,7 +21,7 @@ enum ExpressionNode {
 }
 
 impl ExpressionNode {
-    fn from_pair(pair: Pair<Rule>) -> ExpressionNode {
+    fn from_pair(pair: Pair<Rule>) -> Self {
         match pair.as_rule() {
             Rule::variable => ExpressionNode::Variable(String::from(pair.as_str())),
             Rule::application => {
@@ -53,7 +56,7 @@ impl ExpressionNode {
         }
     }
 
-    pub fn to_expression_str(&self) -> String {
+    fn to_expression_str(&self) -> String {
         let mut expr = String::new();
 
         match self {
@@ -77,6 +80,41 @@ impl ExpressionNode {
 
         expr
     }
+
+    fn search_and_beta_reduce(&mut self) -> bool {
+        match self {
+            ExpressionNode::Variable(_) => false,
+            ExpressionNode::Abstraction { parameter: _, body } => body.search_and_beta_reduce(),
+            ExpressionNode::Application { function, argument } => {
+                if let ExpressionNode::Abstraction { parameter, body } = &mut **function {
+                    body.substitute(&parameter, &argument);
+                    *self = mem::replace(&mut **body, ExpressionNode::Variable(String::new()));
+                    true
+                } else {
+                    function.search_and_beta_reduce() || argument.search_and_beta_reduce()
+                }
+            }
+        }
+    }
+
+    fn substitute(&mut self, bound_variable: &str, target_expr: &Self) {
+        match self {
+            ExpressionNode::Variable(name) => {
+                if name == bound_variable {
+                    *self = target_expr.clone();
+                }
+            }
+            ExpressionNode::Application { function, argument } => {
+                function.substitute(bound_variable, target_expr);
+                argument.substitute(bound_variable, target_expr);
+            }
+            ExpressionNode::Abstraction { parameter, body } => {
+                if parameter != bound_variable {
+                    body.substitute(bound_variable, target_expr);
+                }
+            }
+        }
+    }
 }
 
 pub struct ExpressionTree {
@@ -96,6 +134,10 @@ impl ExpressionTree {
 
     pub fn to_expression_str(&self) -> String {
         self.root.to_expression_str()
+    }
+
+    pub fn beta_reduce(&mut self) -> bool {
+        self.root.search_and_beta_reduce()
     }
 }
 
@@ -127,5 +169,98 @@ mod tests {
         check("a->");
         check("(a ");
         check("( a -> ( b -> a ) )(())");
+    }
+
+    #[test]
+    fn test_deep_cloning() {
+        let node = ExpressionNode::Abstraction {
+            parameter: String::from("a"),
+            body: Box::new(ExpressionNode::Abstraction {
+                parameter: String::from("b"),
+                body: Box::new(ExpressionNode::Variable(String::from("c"))),
+            }),
+        };
+        assert_eq!(node.to_expression_str(), String::from("(a->(b->c))"));
+        let mut node2 = node.clone();
+        assert_eq!(
+            node2.to_expression_str(),
+            String::from("(a->(b->c))"),
+            "Node changed on clone"
+        );
+        if let ExpressionNode::Abstraction { parameter: _, body } = &mut node2 {
+            if let ExpressionNode::Abstraction { parameter: _, body } = &mut **body {
+                *body = Box::new(ExpressionNode::Variable(String::from("d")))
+            }
+        }
+        assert_eq!(
+            node.to_expression_str(),
+            String::from("(a->(b->c))"),
+            "Original node changed"
+        );
+        assert_eq!(
+            node2.to_expression_str(),
+            String::from("(a->(b->d))"),
+            "Cloned node did not change"
+        );
+    }
+
+    #[test]
+    fn substitution() {
+        fn check_substitution(
+            src: &str,
+            bound_variable: &str,
+            target_expr: &str,
+            expected_expr: &str,
+        ) {
+            let mut tree = ExpressionTree::from_line(src).expect("Failed to parse expression tree");
+            tree.root.substitute(
+                bound_variable,
+                &ExpressionTree::from_line(target_expr)
+                    .expect("Failed to parse target expression tree")
+                    .root,
+            );
+            assert_eq!(
+                tree.to_expression_str(),
+                expected_expr,
+                "Substituted expression incorrect"
+            );
+        }
+        check_substitution("(a->b)c", "b", "x y", "((a->(x y)) c)");
+        check_substitution("(a->b) (b->c)", "b", "(d->c)", "((a->(d->c)) (b->c))");
+    }
+
+    #[test]
+    fn beta_reduction() {
+        fn iteratively_reduce_and_check(steps: Vec<&str>) {
+            let mut tree =
+                ExpressionTree::from_line(steps[0]).expect("Failed to parse expression tree");
+            for step in steps[1..].iter() {
+                assert!(tree.beta_reduce(), "Expression tree did not reduce");
+                assert_eq!(
+                    tree.to_expression_str(),
+                    *step,
+                    "Reduced expression tree does not match expected reduction"
+                )
+            }
+            assert!(
+                !tree.beta_reduce(),
+                "Expression tree reduced when no reduction was expected"
+            );
+            assert_eq!(
+                tree.to_expression_str(),
+                steps[steps.len() - 1],
+                "Expression tree changed when no reduction was expected"
+            )
+        }
+        iteratively_reduce_and_check(vec!["a"]);
+        iteratively_reduce_and_check(vec!["(a (a->b))"]);
+        iteratively_reduce_and_check(vec!["((a->a) b)", "b"]);
+        iteratively_reduce_and_check(vec!["((a->c) b)", "c"]);
+        iteratively_reduce_and_check(vec!["(((a->(b->(a b))) c) d)", "((b->(c b)) d)", "(c d)"]);
+        iteratively_reduce_and_check(vec![
+            "(((a->(a b))c) ((a->(a b)) c))",
+            "((c b) ((a->(a b)) c))",
+            "((c b) (c b))",
+        ]);
     }
 }
