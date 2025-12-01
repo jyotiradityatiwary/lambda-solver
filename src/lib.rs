@@ -1,165 +1,94 @@
-use std::rc::Rc;
+use std::{fmt, rc::Rc};
 
-use pest::{Parser, iterators::Pair};
-use pest_derive::Parser;
+use crate::expression_node::ExpressionNode;
+pub use crate::stringifier::ExpressionNodeStringifierError;
 
-#[derive(Parser)]
-#[grammar = "lambda_grammar.pest"]
-struct LambdaParser;
+mod parser {
+    use pest_derive::Parser;
 
-#[derive(Clone)]
-enum ExpressionNode {
-    Variable(String),
-    Application {
-        function: Rc<ExpressionNode>,
-        argument: Rc<ExpressionNode>,
-    },
-    Abstraction {
-        parameter: String,
-        body: Rc<ExpressionNode>,
-    },
+    #[derive(Parser)]
+    #[grammar = "lambda_grammar.pest"]
+    pub struct LambdaParser;
 }
 
-impl ExpressionNode {
-    fn from_pair(pair: Pair<Rule>) -> Self {
-        match pair.as_rule() {
-            Rule::variable => ExpressionNode::Variable(String::from(pair.as_str())),
-            Rule::application => {
-                let mut pairs = pair.into_inner();
-                let function_pair = pairs.next().unwrap();
-                let argument_pair = pairs.next().unwrap();
-                ExpressionNode::Application {
-                    function: Rc::new(ExpressionNode::from_pair(function_pair)),
-                    argument: Rc::new(ExpressionNode::from_pair(argument_pair)),
-                }
-            }
-            Rule::abstraction => {
-                let mut pairs = pair.into_inner();
-                let parameter_pair = pairs.next().unwrap();
-                let body_pair = pairs.next().unwrap();
-                ExpressionNode::Abstraction {
-                    parameter: String::from(parameter_pair.as_str()),
-                    body: Rc::new(ExpressionNode::from_pair(body_pair)),
-                }
-            }
-            Rule::EOI
-            | Rule::WHITESPACE
-            | Rule::variable_start
-            | Rule::parameter
-            | Rule::arrow
-            | Rule::body
-            | Rule::function
-            | Rule::argument
-            | Rule::expression
-            | Rule::bracketed_expression
-            | Rule::full_string => unreachable!(),
-        }
-    }
+mod expression_node;
+mod expression_tree_builder;
+mod stringifier;
 
-    fn to_expression_str(&self) -> String {
-        let mut expr = String::new();
-
-        match self {
-            ExpressionNode::Variable(name) => expr.push_str(name),
-            ExpressionNode::Application { function, argument } => {
-                expr.push('(');
-                expr.push_str(&function.to_expression_str());
-                expr.push(' ');
-                expr.push_str(&argument.to_expression_str());
-                expr.push(')');
-            }
-            ExpressionNode::Abstraction { parameter, body } => {
-                expr.push('(');
-                expr.push_str(&parameter);
-                expr.push('-');
-                expr.push('>');
-                expr.push_str(&body.to_expression_str());
-                expr.push(')')
-            }
-        };
-
-        expr
-    }
-
-    fn search_and_beta_reduce(self: &Rc<Self>) -> Option<Rc<Self>> {
-        match self.as_ref() {
-            ExpressionNode::Variable(_) => None,
-            ExpressionNode::Abstraction { parameter, body } => {
-                body.search_and_beta_reduce().map(|body| {
-                    Rc::new(ExpressionNode::Abstraction {
-                        parameter: parameter.clone(),
-                        body: body,
-                    })
-                })
-            }
-            ExpressionNode::Application { function, argument } => {
-                if let ExpressionNode::Abstraction { parameter, body } = function.as_ref() {
-                    Some(body.substitute(parameter, argument))
-                } else if let Some(reduced_function) = function.search_and_beta_reduce() {
-                    Some(Rc::new(ExpressionNode::Application {
-                        function: reduced_function,
-                        argument: Rc::clone(argument),
-                    }))
-                } else if let Some(reduced_argument) = argument.search_and_beta_reduce() {
-                    Some(Rc::new(ExpressionNode::Application {
-                        function: Rc::clone(function),
-                        argument: reduced_argument,
-                    }))
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    fn substitute(self: &Rc<Self>, bound_variable: &str, target_expr: &Rc<Self>) -> Rc<Self> {
-        match self.as_ref() {
-            ExpressionNode::Variable(name) => {
-                if name == bound_variable {
-                    Rc::clone(target_expr)
-                } else {
-                    Rc::clone(self)
-                }
-            }
-            ExpressionNode::Application { function, argument } => {
-                Rc::new(ExpressionNode::Application {
-                    function: function.substitute(bound_variable, target_expr),
-                    argument: argument.substitute(bound_variable, target_expr),
-                })
-            }
-            ExpressionNode::Abstraction { parameter, body } => {
-                if parameter != bound_variable {
-                    Rc::new(ExpressionNode::Abstraction {
-                        parameter: parameter.clone(),
-                        body: body.substitute(bound_variable, target_expr),
-                    })
-                } else {
-                    Rc::clone(self)
-                }
-            }
-        }
-    }
-}
-
+/// A lambda-expression represented using De Bruijn indices.
+///
+/// ## Equality
+///
+/// `ExpressionTree` implements `PartialEq`, where equality (`==`)
+/// corresponds to **alpha-equivalence**: two expressions are considered equal
+/// if they differ only by consistent renaming of bound variables.
+///
+/// This comparison is structural and based on the De Bruijn
+/// representation of the expression.
+///
+/// ```rust
+/// use lambda_solver::ExpressionTree;
+///
+/// let a = ExpressionTree::from_line("(a->a)");
+/// let b = ExpressionTree::from_line("(b->b)");
+/// assert_eq!(a, b); // alpha-equivalent
+/// ```
+#[derive(PartialEq, Eq)]
 pub struct ExpressionTree {
     root: Rc<ExpressionNode>,
 }
 
 impl ExpressionTree {
-    pub fn from_line(line: &str) -> Result<ExpressionTree, pest::error::Error<Rule>> {
+    /// Build expression tree from string representation
+    ///
+    /// ```rust
+    /// use lambda_solver::ExpressionTree;
+    ///
+    /// let tree = ExpressionTree::from_line("((a->b) c)").unwrap();
+    /// ```
+    pub fn from_line(line: &str) -> Result<ExpressionTree, pest::error::Error<parser::Rule>> {
         Ok(ExpressionTree {
-            root: Rc::new(ExpressionNode::from_pair(
-                LambdaParser::parse(Rule::full_string, line)?
-                    .next()
-                    .unwrap(),
-            )),
+            root: ExpressionNode::from_line(line)?,
         })
     }
 
-    pub fn to_expression_str(&self) -> String {
+    /// Generate a string representation of the expression tree
+    ///
+    /// ```rust
+    /// use lambda_solver::ExpressionTree;
+    ///
+    /// let tree = ExpressionTree::from_line("((a->b) c)").unwrap();
+    /// assert_eq!(tree.to_expression_str().unwrap(), "((a->b) c)");
+    /// ```
+    pub fn to_expression_str(&self) -> Result<String, ExpressionNodeStringifierError> {
         self.root.to_expression_str()
     }
 
+    /// Generate a string representation of the expression tree, with bound variables represented an De Brujin indices
+    ///
+    /// ```rust
+    /// use lambda_solver::ExpressionTree;
+    ///
+    /// let tree = ExpressionTree::from_line("((a->b) c)").unwrap();
+    /// assert_eq!(tree.to_expression_str_de_brujin(), "((λ b) c)");
+    /// ```
+    pub fn to_expression_str_de_brujin(&self) -> String {
+        self.root.to_expression_str_de_brujin()
+    }
+
+    /// Perform beta reduction (one step) on the lambda expression and returns a boolean stating if the tree was beta reduced
+    ///
+    /// ```rust
+    /// use lambda_solver::ExpressionTree;
+    ///
+    /// let mut tree = ExpressionTree::from_line("((a->a) b)").unwrap();
+    /// while (tree.beta_reduce()) {
+    ///     // you can access the intermediate state of the tree between steps of the beta reduction
+    ///     println!("{}", tree.to_expression_str().unwrap());
+    /// }
+    ///
+    /// assert_eq!(tree, ExpressionTree::from_line("b").unwrap());
+    /// ```
     pub fn beta_reduce(&mut self) -> bool {
         match self.root.search_and_beta_reduce() {
             Some(exp) => {
@@ -171,6 +100,13 @@ impl ExpressionTree {
     }
 }
 
+/// Gives De Brujin representation of expression tree. Not stable. Use [ExpressionTree::to_expression_str_de_brujin] to get de brujin representation deterministically
+impl fmt::Debug for ExpressionTree {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ExpressionTree {}", self.to_expression_str_de_brujin())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,7 +115,9 @@ mod tests {
     fn build_expression_tree_and_convert_to_str() {
         fn check(input: &str, expected_output: &str) {
             let expr_tree = ExpressionTree::from_line(input).unwrap();
-            let output = expr_tree.to_expression_str();
+            let output = expr_tree
+                .to_expression_str()
+                .unwrap_or_else(|e| panic!("Failed to build string representation of expression tree. Input: {}. Error: {:?}", input, e));
             assert_eq!(output, expected_output);
         }
 
@@ -202,66 +140,6 @@ mod tests {
     }
 
     #[test]
-    fn test_deep_cloning() {
-        let node = ExpressionNode::Abstraction {
-            parameter: String::from("a"),
-            body: Rc::new(ExpressionNode::Abstraction {
-                parameter: String::from("b"),
-                body: Rc::new(ExpressionNode::Variable(String::from("c"))),
-            }),
-        };
-        assert_eq!(node.to_expression_str(), String::from("(a->(b->c))"));
-        let mut node2 = node.clone();
-        assert_eq!(
-            node2.to_expression_str(),
-            String::from("(a->(b->c))"),
-            "Node changed on clone"
-        );
-        if let ExpressionNode::Abstraction { parameter: _, body } = &mut node2 {
-            if let ExpressionNode::Abstraction { parameter: _, body } = Rc::make_mut(body) {
-                *body = Rc::new(ExpressionNode::Variable(String::from("d")))
-            }
-        }
-        assert_eq!(
-            node.to_expression_str(),
-            String::from("(a->(b->c))"),
-            "Original node changed"
-        );
-        assert_eq!(
-            node2.to_expression_str(),
-            String::from("(a->(b->d))"),
-            "Cloned node did not change"
-        );
-    }
-
-    #[test]
-    fn substitution() {
-        fn check_substitution(
-            src: &str,
-            bound_variable: &str,
-            target_expr: &str,
-            expected_expr: &str,
-        ) {
-            let exp = ExpressionTree::from_line(src)
-                .expect("Failed to parse expression tree")
-                .root;
-            let substituted_exp = exp.substitute(
-                bound_variable,
-                &ExpressionTree::from_line(target_expr)
-                    .expect("Failed to parse target expression tree")
-                    .root,
-            );
-            assert_eq!(
-                substituted_exp.to_expression_str(),
-                expected_expr,
-                "Substituted expression incorrect"
-            );
-        }
-        check_substitution("(a->b)c", "b", "x y", "((a->(x y)) c)");
-        check_substitution("(a->b) (b->c)", "b", "(d->c)", "((a->(d->c)) (b->c))");
-    }
-
-    #[test]
     fn beta_reduction() {
         fn iteratively_reduce_and_check(steps: Vec<&str>) {
             let mut tree =
@@ -269,7 +147,7 @@ mod tests {
             for step in steps[1..].iter() {
                 assert!(tree.beta_reduce(), "Expression tree did not reduce");
                 assert_eq!(
-                    tree.to_expression_str(),
+                    tree.to_expression_str().unwrap(),
                     *step,
                     "Reduced expression tree does not match expected reduction"
                 )
@@ -279,7 +157,7 @@ mod tests {
                 "Expression tree reduced when no reduction was expected"
             );
             assert_eq!(
-                tree.to_expression_str(),
+                tree.to_expression_str().unwrap(),
                 steps[steps.len() - 1],
                 "Expression tree changed when no reduction was expected"
             )
@@ -294,38 +172,6 @@ mod tests {
             "((c b) ((a->(a b)) c))",
             "((c b) (c b))",
         ]);
-    }
-
-    #[test]
-    fn rc_clones() {
-        let mut tree =
-            ExpressionTree::from_line("((a->((a a) (a a))) b)").expect("Failed to parse tree");
-        while tree.beta_reduce() {}
-        if let ExpressionNode::Application {
-            function,
-            argument: _,
-        } = tree.root.as_ref()
-        {
-            if let ExpressionNode::Application {
-                function,
-                argument: _,
-            } = function.as_ref()
-            {
-                if let ExpressionNode::Variable(name) = function.as_ref() {
-                    assert_eq!(name, "b", "Unexpected variable name")
-                } else {
-                    panic!("ExpressionNode is not a variable")
-                }
-                assert_eq!(
-                    Rc::strong_count(function),
-                    4,
-                    "Unexpected reference count of variable \"b\""
-                )
-            } else {
-                panic!("Function of tree root is not an application")
-            }
-        } else {
-            panic!("Tree root is not an abstraction!")
-        }
+        iteratively_reduce_and_check(vec!["(((a->(b->(a b))) b) c)", "((b->(b b)) c)", "(b c)"]);
     }
 }
