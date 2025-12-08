@@ -1,38 +1,60 @@
 use pest::{Parser, iterators::Pair};
 use std::{collections::HashMap, rc::Rc};
 
-use crate::{expression_node::ExpressionNode, parser};
+use crate::{ExpressionTree, alias::AliasStore, expression_node::ExpressionNode, parser};
 
-pub struct ExpressionTreeBuilder {
+/// Can be used to repeatedly build expression trees from string representation without re-allocating resources.
+///
+/// ## Usage:
+/// ```rust
+/// use lambda_solver::{AliasStore, ExpressionTreeBuilder};
+///
+/// let alias_store = AliasStore::new();
+/// let mut builder = ExpressionTreeBuilder::new(&alias_store);
+///
+/// let tree1 = builder.build("a->b").unwrap();
+/// let tree2 = builder.build("a->a").unwrap();
+///
+/// assert_eq!(tree1.to_expression_str().unwrap(), "(a->b)");
+/// ```
+pub struct ExpressionTreeBuilder<'a> {
     /// maps the name of a bound variable to it's depth (in terms of lambda functions) in the expression tree
     bound_variables: HashMap<String, usize>,
+    alias_store: &'a AliasStore,
 }
 
-impl ExpressionTreeBuilder {
-    pub fn new() -> Self {
+impl<'a> ExpressionTreeBuilder<'a> {
+    pub fn new(alias_store: &'a AliasStore) -> Self {
         Self {
             bound_variables: HashMap::new(),
+            alias_store,
         }
     }
 
-    pub fn node_from_pair(
+    fn node_from_pair(
         &mut self,
         pair: Pair<parser::Rule>,
         lambda_depth: usize,
-    ) -> ExpressionNode {
+    ) -> Rc<ExpressionNode> {
+        let variable_name = pair.as_str();
         match pair.as_rule() {
-            parser::Rule::variable => match self.bound_variables.get(pair.as_str()) {
-                Some(binding_depth) => ExpressionNode::BoundVariable(lambda_depth - binding_depth),
-                None => ExpressionNode::FreeVariable(String::from(pair.as_str())),
+            parser::Rule::variable => match self.bound_variables.get(variable_name) {
+                Some(binding_depth) => {
+                    Rc::new(ExpressionNode::BoundVariable(lambda_depth - binding_depth))
+                }
+                None => match self.alias_store.get(variable_name) {
+                    Some(tree) => Rc::clone(&tree.root),
+                    None => Rc::new(ExpressionNode::FreeVariable(String::from(variable_name))),
+                },
             },
             parser::Rule::application => {
                 let mut pairs = pair.into_inner();
                 let function_pair = pairs.next().unwrap();
                 let argument_pair = pairs.next().unwrap();
-                ExpressionNode::Application {
-                    function: Rc::new(self.node_from_pair(function_pair, lambda_depth)),
-                    argument: Rc::new(self.node_from_pair(argument_pair, lambda_depth)),
-                }
+                Rc::new(ExpressionNode::Application {
+                    function: self.node_from_pair(function_pair, lambda_depth),
+                    argument: self.node_from_pair(argument_pair, lambda_depth),
+                })
             }
             parser::Rule::abstraction => {
                 let mut pairs = pair.into_inner();
@@ -49,10 +71,10 @@ impl ExpressionTreeBuilder {
                 } else {
                     self.bound_variables.remove(parameter_str);
                 }
-                ExpressionNode::Abstraction {
+                Rc::new(ExpressionNode::Abstraction {
                     parameter: String::from(parameter_pair.as_str()),
-                    body: Rc::new(body),
-                }
+                    body,
+                })
             }
             parser::Rule::EOI
             | parser::Rule::WHITESPACE
@@ -68,15 +90,24 @@ impl ExpressionTreeBuilder {
         }
     }
 
-    pub fn node_from_line(
+    fn node_from_line(
         &mut self,
         line: &str,
-    ) -> Result<ExpressionNode, pest::error::Error<parser::Rule>> {
+    ) -> Result<Rc<ExpressionNode>, pest::error::Error<parser::Rule>> {
         Ok(self.node_from_pair(
             parser::LambdaParser::parse(parser::Rule::full_string, line)?
                 .next()
                 .unwrap(),
             0,
         ))
+    }
+
+    pub fn build(
+        &mut self,
+        line: &str,
+    ) -> Result<ExpressionTree, pest::error::Error<parser::Rule>> {
+        Ok(ExpressionTree {
+            root: self.node_from_line(line)?,
+        })
     }
 }

@@ -2,8 +2,6 @@ use std::{fmt, rc::Rc};
 
 use crate::{
     ExpressionNodeStringifierError,
-    expression_tree_builder::ExpressionTreeBuilder,
-    parser,
     stringifier::{ExpNodeStringifierDeBrujin, ExpressionNodeStringifier},
 };
 
@@ -24,9 +22,6 @@ pub enum ExpressionNode {
 }
 
 impl ExpressionNode {
-    pub fn from_line(line: &str) -> Result<Rc<Self>, pest::error::Error<parser::Rule>> {
-        Ok(Rc::new(ExpressionTreeBuilder::new().node_from_line(line)?))
-    }
     pub fn to_expression_str(&self) -> Result<String, ExpressionNodeStringifierError> {
         ExpressionNodeStringifier::new().build(self)
     }
@@ -143,6 +138,8 @@ impl Eq for ExpressionNode {}
 
 #[cfg(test)]
 mod test {
+    use crate::ExpressionTree;
+
     use super::*;
 
     #[test]
@@ -184,9 +181,11 @@ mod test {
     fn substitution() {
         fn check_substitution(src: ExpressionNode, target_expr: &str, expected_expr: &str) {
             let substituted_exp = Rc::new(src).substitute(
-                &ExpressionNode::from_line(target_expr).expect("Failed to parse target expression"),
+                &ExpressionTree::from_line(target_expr)
+                    .expect("Failed to parse target expression")
+                    .root,
             );
-            let expected = ExpressionNode::from_line(expected_expr).unwrap();
+            let expected = ExpressionTree::from_line(expected_expr).unwrap().root;
             assert_eq!(
                 substituted_exp, expected,
                 "Substituted expression incorrect"
@@ -221,8 +220,9 @@ mod test {
 
     #[test]
     fn rc_clones() {
-        let mut node1 =
-            ExpressionNode::from_line("((a->((a a) (a a))) b)").expect("Failed to parse tree");
+        let mut node1 = ExpressionTree::from_line("((a->((a a) (a a))) b)")
+            .expect("Failed to parse tree")
+            .root;
         while let Some(exp) = node1.search_and_beta_reduce() {
             node1 = exp
         }

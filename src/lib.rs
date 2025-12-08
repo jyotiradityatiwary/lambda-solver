@@ -1,6 +1,8 @@
 use std::{fmt, rc::Rc};
 
+pub use crate::alias::{AliasStore, DEFAULT_ALIASES};
 use crate::expression_node::ExpressionNode;
+pub use crate::expression_tree_builder::ExpressionTreeBuilder;
 pub use crate::stringifier::ExpressionNodeStringifierError;
 
 mod parser {
@@ -11,6 +13,7 @@ mod parser {
     pub struct LambdaParser;
 }
 
+mod alias;
 mod expression_node;
 mod expression_tree_builder;
 mod stringifier;
@@ -47,9 +50,26 @@ impl ExpressionTree {
     /// let tree = ExpressionTree::from_line("((a->b) c)").unwrap();
     /// ```
     pub fn from_line(line: &str) -> Result<ExpressionTree, pest::error::Error<parser::Rule>> {
-        Ok(ExpressionTree {
-            root: ExpressionNode::from_line(line)?,
-        })
+        let alias_store = AliasStore::new();
+        Self::from_line_with_aliases(line, &alias_store)
+    }
+
+    /// Build expression tree from string representation
+    ///
+    /// ```rust
+    /// use lambda_solver::{ExpressionTree, AliasStore};
+    ///
+    /// let mut aliases = AliasStore::new();
+    /// aliases.set(String::from("x"), ExpressionTree::from_line("a->b").unwrap());
+    /// let tree = ExpressionTree::from_line_with_aliases("(x c)", &aliases).unwrap();
+    ///
+    /// assert_eq!(tree, ExpressionTree::from_line("((a->b) c)").unwrap()); // should substitute the alias
+    /// ```
+    pub fn from_line_with_aliases(
+        line: &str,
+        alias_store: &AliasStore,
+    ) -> Result<ExpressionTree, pest::error::Error<parser::Rule>> {
+        ExpressionTreeBuilder::new(&alias_store).build(line)
     }
 
     /// Generate a string representation of the expression tree
