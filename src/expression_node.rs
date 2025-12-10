@@ -142,6 +142,15 @@ mod test {
 
     use super::*;
 
+    fn node_from_str(expression_str: &str) -> ExpressionNode {
+        Rc::try_unwrap(
+            ExpressionTree::from_line(expression_str)
+                .expect("Should parse")
+                .root,
+        )
+        .expect("Should have only one strong reference")
+    }
+
     #[test]
     fn test_deep_cloning() {
         let node = ExpressionNode::Abstraction {
@@ -151,41 +160,34 @@ mod test {
                 body: Rc::new(ExpressionNode::FreeVariable(String::from("c"))),
             }),
         };
+        let original = "λa.λb.c";
+        let modified = "λa.λb.d";
         assert_eq!(
-            node.to_expression_str().unwrap(),
-            String::from("(a->(b->c))")
+            node,
+            node_from_str(original),
+            "Node did not build correctly"
         );
         let mut node2 = node.clone();
-        assert_eq!(
-            node2.to_expression_str().unwrap(),
-            String::from("(a->(b->c))"),
-            "Node changed on clone"
-        );
+        assert_eq!(node2, node_from_str(original), "Node changed on clone");
         if let ExpressionNode::Abstraction { parameter: _, body } = &mut node2 {
             if let ExpressionNode::Abstraction { parameter: _, body } = Rc::make_mut(body) {
                 *body = Rc::new(ExpressionNode::FreeVariable(String::from("d")))
             }
         }
-        assert_eq!(
-            node.to_expression_str().unwrap(),
-            String::from("(a->(b->c))"),
-            "Original node changed"
-        );
-        assert_eq!(
-            node2.to_expression_str().unwrap(),
-            String::from("(a->(b->d))"),
-            "Cloned node did not change"
-        );
+        assert_eq!(node, node_from_str(original), "Original node changed");
+        assert_eq!(node2, node_from_str(modified), "Cloned node did not change");
     }
+
     #[test]
     fn substitution() {
         fn check_substitution(src: ExpressionNode, target_expr: &str, expected_expr: &str) {
-            let substituted_exp = Rc::new(src).substitute(
-                &ExpressionTree::from_line(target_expr)
-                    .expect("Failed to parse target expression")
-                    .root,
-            );
-            let expected = ExpressionTree::from_line(expected_expr).unwrap().root;
+            let target_expr_node = ExpressionTree::from_line(target_expr)
+                .expect("Failed to parse target expression")
+                .root;
+            let substituted_exp = Rc::new(src).substitute(&target_expr_node);
+            let expected = ExpressionTree::from_line(expected_expr)
+                .expect("Failed to parse expected expression")
+                .root;
             assert_eq!(
                 substituted_exp, expected,
                 "Substituted expression incorrect"
@@ -200,7 +202,7 @@ mod test {
                 argument: Rc::new(ExpressionNode::FreeVariable(String::from("c"))),
             },
             "x y",
-            "((a->(x y)) c)",
+            "((λa.x y) c)",
         );
         check_substitution(
             ExpressionNode::Application {
@@ -213,14 +215,14 @@ mod test {
                     body: Rc::new(ExpressionNode::FreeVariable(String::from("d"))),
                 }),
             },
-            "(d->c)",
-            "((a->(d->c)) (c->d))",
+            "λd.c",
+            "(λa.λd.c) (λc.d)",
         );
     }
 
     #[test]
     fn rc_clones() {
-        let mut node1 = ExpressionTree::from_line("((a->((a a) (a a))) b)")
+        let mut node1 = ExpressionTree::from_line("(λa.(a a) (a a)) b")
             .expect("Failed to parse tree")
             .root;
         while let Some(exp) = node1.search_and_beta_reduce() {

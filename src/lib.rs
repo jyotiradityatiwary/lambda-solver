@@ -2,16 +2,8 @@ use std::{fmt, rc::Rc};
 
 pub use crate::alias::{AliasStore, DEFAULT_ALIASES};
 use crate::expression_node::ExpressionNode;
-pub use crate::expression_tree_builder::ExpressionTreeBuilder;
+pub use crate::expression_tree_builder::{ExpressionTreeBuilder, Rule};
 pub use crate::stringifier::ExpressionNodeStringifierError;
-
-mod parser {
-    use pest_derive::Parser;
-
-    #[derive(Parser)]
-    #[grammar = "lambda_grammar.pest"]
-    pub struct LambdaParser;
-}
 
 mod alias;
 mod expression_node;
@@ -32,9 +24,28 @@ mod stringifier;
 /// ```rust
 /// use lambda_solver::ExpressionTree;
 ///
-/// let a = ExpressionTree::from_line("(a->a)");
-/// let b = ExpressionTree::from_line("(b->b)");
+/// let a = ExpressionTree::from_line("λa.a");
+/// let b = ExpressionTree::from_line("λb.b");
 /// assert_eq!(a, b); // alpha-equivalent
+/// ```
+///
+/// ## Note on the λ (lambda) symbol
+///
+/// It can be inconvinient to type the lambda symbol on the keyboard. As a
+/// workaround, you can alias it as a sequence which is easier to type, before
+/// passing the expression string to [ExpressionTree::from_line] or to
+/// [ExpressionTreeBuilder]. For example, you can alias `λ` as `\l`
+/// (demonstrated below)
+///
+/// ```rust
+/// use lambda_solver::ExpressionTree;
+///
+/// let expression = r"\l a.a";
+/// let tree = ExpressionTree::from_line(expression); // will fail
+/// assert!(tree.is_err());
+///
+/// let expression = &expression.replace(r"\l", "λ"); // replace `\l` with `λ`
+/// let tree = ExpressionTree::from_line(expression).unwrap(); // won't fail
 /// ```
 #[derive(PartialEq, Eq)]
 pub struct ExpressionTree {
@@ -47,9 +58,9 @@ impl ExpressionTree {
     /// ```rust
     /// use lambda_solver::ExpressionTree;
     ///
-    /// let tree = ExpressionTree::from_line("((a->b) c)").unwrap();
+    /// let tree = ExpressionTree::from_line("(λa.b) c").unwrap();
     /// ```
-    pub fn from_line(line: &str) -> Result<ExpressionTree, pest::error::Error<parser::Rule>> {
+    pub fn from_line(line: &str) -> Result<ExpressionTree, pest::error::Error<Rule>> {
         let alias_store = AliasStore::new();
         Self::from_line_with_aliases(line, &alias_store)
     }
@@ -60,15 +71,15 @@ impl ExpressionTree {
     /// use lambda_solver::{ExpressionTree, AliasStore};
     ///
     /// let mut aliases = AliasStore::new();
-    /// aliases.set(String::from("x"), ExpressionTree::from_line("a->b").unwrap());
+    /// aliases.set(String::from("x"), ExpressionTree::from_line("λa.b").unwrap());
     /// let tree = ExpressionTree::from_line_with_aliases("(x c)", &aliases).unwrap();
     ///
-    /// assert_eq!(tree, ExpressionTree::from_line("((a->b) c)").unwrap()); // should substitute the alias
+    /// assert_eq!(tree, ExpressionTree::from_line("(λa.b) c").unwrap());
     /// ```
     pub fn from_line_with_aliases(
         line: &str,
         alias_store: &AliasStore,
-    ) -> Result<ExpressionTree, pest::error::Error<parser::Rule>> {
+    ) -> Result<ExpressionTree, pest::error::Error<Rule>> {
         ExpressionTreeBuilder::new(&alias_store).build(line)
     }
 
@@ -77,8 +88,8 @@ impl ExpressionTree {
     /// ```rust
     /// use lambda_solver::ExpressionTree;
     ///
-    /// let tree = ExpressionTree::from_line("((a->b) c)").unwrap();
-    /// assert_eq!(tree.to_expression_str().unwrap(), "((a->b) c)");
+    /// let tree = ExpressionTree::from_line("(λa.b) c").unwrap();
+    /// assert_eq!(tree.to_expression_str().unwrap(), "((λa.b) c)");
     /// ```
     pub fn to_expression_str(&self) -> Result<String, ExpressionNodeStringifierError> {
         self.root.to_expression_str()
@@ -89,7 +100,7 @@ impl ExpressionTree {
     /// ```rust
     /// use lambda_solver::ExpressionTree;
     ///
-    /// let tree = ExpressionTree::from_line("((a->b) c)").unwrap();
+    /// let tree = ExpressionTree::from_line("(λa.b) c").unwrap();
     /// assert_eq!(tree.to_expression_str_de_brujin(), "((λ b) c)");
     /// ```
     pub fn to_expression_str_de_brujin(&self) -> String {
@@ -101,7 +112,7 @@ impl ExpressionTree {
     /// ```rust
     /// use lambda_solver::ExpressionTree;
     ///
-    /// let mut tree = ExpressionTree::from_line("((a->a) b)").unwrap();
+    /// let mut tree = ExpressionTree::from_line("(λa.a) b").unwrap();
     /// while (tree.beta_reduce()) {
     ///     // you can access the intermediate state of the tree between steps of the beta reduction
     ///     println!("{}", tree.to_expression_str().unwrap());
@@ -143,8 +154,10 @@ mod tests {
 
         check("a", "a");
         check("a b", "(a b)");
-        check("a    ->b", "(a->b)");
-        check("( a -> ( b -> a ) )((b))", "((a->(b->a)) b)");
+        check("λa    .b", "(λa.b)");
+        check("(λ a . ( λ  b.a ) )((b))", "((λa.(λb.a)) b)");
+        check("λa.λb.c", "(λa.(λb.c))");
+        check("λa b c.b", "(λa.(λb.(λc.b)))");
     }
 
     #[test]
@@ -154,9 +167,9 @@ mod tests {
             assert!(result.is_err());
         }
 
-        check("a->");
+        check("λa.");
         check("(a ");
-        check("( a -> ( b -> a ) )(())");
+        check("( λ a . ( λb . a ) )(())");
     }
 
     #[test]
@@ -183,15 +196,15 @@ mod tests {
             )
         }
         iteratively_reduce_and_check(vec!["a"]);
-        iteratively_reduce_and_check(vec!["(a (a->b))"]);
-        iteratively_reduce_and_check(vec!["((a->a) b)", "b"]);
-        iteratively_reduce_and_check(vec!["((a->c) b)", "c"]);
-        iteratively_reduce_and_check(vec!["(((a->(b->(a b))) c) d)", "((b->(c b)) d)", "(c d)"]);
+        iteratively_reduce_and_check(vec!["(a (λa.b))"]);
+        iteratively_reduce_and_check(vec!["((λa.a) b)", "b"]);
+        iteratively_reduce_and_check(vec!["((λa.c) b)", "c"]);
+        iteratively_reduce_and_check(vec!["(((λa.(λb.(a b))) c) d)", "((λb.(c b)) d)", "(c d)"]);
         iteratively_reduce_and_check(vec![
-            "(((a->(a b))c) ((a->(a b)) c))",
-            "((c b) ((a->(a b)) c))",
+            "(((λa.(a b))c) ((λa.(a b)) c))",
+            "((c b) ((λa.(a b)) c))",
             "((c b) (c b))",
         ]);
-        iteratively_reduce_and_check(vec!["(((a->(b->(a b))) b) c)", "((b->(b b)) c)", "(b c)"]);
+        iteratively_reduce_and_check(vec!["(((λa.(λb.(a b))) b) c)", "((λb.(b b)) c)", "(b c)"]);
     }
 }

@@ -56,9 +56,9 @@ impl ExpressionNodeStringifier {
             }
             ExpressionNode::Abstraction { parameter, body } => {
                 self.string_expr.push('(');
+                self.string_expr.push('λ');
                 self.string_expr.push_str(&parameter);
-                self.string_expr.push('-');
-                self.string_expr.push('>');
+                self.string_expr.push('.');
                 self.bound_variable_names
                     .insert(lambda_depth, String::from(parameter));
                 self.stringify(body, lambda_depth + 1)?;

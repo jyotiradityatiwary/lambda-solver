@@ -7,7 +7,7 @@ pub struct AliasStore {
     name_to_tree: HashMap<String, ExpressionTree>,
 }
 
-pub const DEFAULT_ALIASES: [(&str, &str); 2] = [("TRUE", "x->(y->x)"), ("FALSE", "x->(y->y)")];
+pub const DEFAULT_ALIASES: [(&str, &str); 2] = [("TRUE", "λx.λy.x"), ("FALSE", "λx.λy.y")];
 
 impl AliasStore {
     pub fn new() -> Self {

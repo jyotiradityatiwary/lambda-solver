@@ -1,18 +1,24 @@
-WHITESPACE = _{ " " }
+WHITESPACE = _{ " " | "\n" | "\t" }
 
-variable_start = _{ ASCII_ALPHA_LOWER | "_" }
-variable       = @{ variable_start ~ (ASCII_ALPHA | ASCII_DIGIT)* }
+// Variables can contain ASCII alphabets, numerical digits and underscores
+// but must not start with a digit
+variable_start = _{ ASCII_ALPHA | "_" }
+variable       = @{ variable_start ~ (variable_start | ASCII_DIGIT)* }
 
-parameter   = _{ variable }
-arrow       = _{ "->" | ":" }
-body        = _{ bracketed_expression }
-abstraction =  { (parameter ~ arrow ~ body) | ("λ" ~ parameter ~ "." ~ body) }
+// An abstraction is: a "λ", followed by a list of (space separated) variables,
+// followed by ".", followed by an expression
+variable_list = _{ (variable ~ variable_list) | variable }
+parameters    =  { variable_list }
+abstraction   =  { "λ" ~ parameters ~ "." ~ expression }
 
-function    = _{ bracketed_expression }
-argument    = _{ bracketed_expression }
-application =  { function ~ argument }
+// Expression can be just an atom, or a series of whitespace separated atoms
+expression           = _{ (atom ~ expression) | atom }
+bracketed_expression =  { "(" ~ expression ~ ")" }
+atom                 = _{
+    variable
+  | bracketed_expression
+  | abstraction
+}
 
-expression           = _{ application | abstraction | bracketed_expression }
-bracketed_expression = _{ "(" ~ expression ~ ")" | variable }
-
-full_string = _{ SOI ~ expression ~ EOI }
+root_expression =  { expression }
+full_string     = _{ SOI ~ root_expression ~ EOI }
