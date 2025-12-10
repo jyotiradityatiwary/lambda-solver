@@ -1,3 +1,5 @@
+//! An untyped lambda calculus library
+
 use std::{fmt, rc::Rc};
 
 pub use crate::alias::{AliasStore, DEFAULT_ALIASES};
@@ -174,6 +176,32 @@ mod tests {
 
     #[test]
     fn beta_reduction() {
+        fn beta_reduce_and_check(builder: &mut ExpressionTreeBuilder, start: &str, end: &str) {
+            let mut tree = builder
+                .build(start)
+                .expect("Failed to parse start expression");
+            while tree.beta_reduce() {}
+            assert_eq!(
+                tree,
+                builder
+                    .build(end)
+                    .expect("Failed to parse target (end) tree"),
+                "Reduced expression does not match expected end expression",
+            )
+        }
+
+        let aliases = AliasStore::with_defaults();
+        let mut builder = ExpressionTreeBuilder::new(&aliases);
+        beta_reduce_and_check(&mut builder, "NOT TRUE", "FALSE");
+        beta_reduce_and_check(&mut builder, "NOT FALSE", "TRUE");
+        beta_reduce_and_check(&mut builder, "AND TRUE TRUE", "TRUE");
+        beta_reduce_and_check(&mut builder, "AND FALSE TRUE", "FALSE");
+        beta_reduce_and_check(&mut builder, "OR TRUE FALSE", "TRUE");
+        beta_reduce_and_check(&mut builder, "OR FALSE FALSE", "FALSE");
+    }
+
+    #[test]
+    fn iterative_beta_reduction() {
         fn iteratively_reduce_and_check(steps: Vec<&str>) {
             let mut tree =
                 ExpressionTree::from_line(steps[0]).expect("Failed to parse expression tree");

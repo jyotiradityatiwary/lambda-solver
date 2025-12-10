@@ -1,13 +1,21 @@
 use std::collections::HashMap;
 
-use crate::ExpressionTree;
+use crate::{ExpressionTree, Rule};
 
 /// Hold aliases for [crate::ExpressionTreeBuilder]
 pub struct AliasStore {
     name_to_tree: HashMap<String, ExpressionTree>,
 }
 
-pub const DEFAULT_ALIASES: [(&str, &str); 2] = [("TRUE", "λx.λy.x"), ("FALSE", "λx.λy.y")];
+pub const DEFAULT_ALIASES: [(&str, &str); 6] = [
+    // Logic
+    ("TRUE", "λx.λy.x"),
+    ("FALSE", "λx.λy.y"),
+    ("AND", "λp.λq.p q p"),
+    ("OR", "λp.λq.p p q"),
+    ("NOT", "λp.p FALSE TRUE"),
+    ("IFTHENELSE", "λp.λa.λb.p a b"),
+];
 
 impl AliasStore {
     pub fn new() -> Self {
@@ -16,12 +24,15 @@ impl AliasStore {
         }
     }
 
-    pub fn from_pair_iterator<'a>(iterator: impl Iterator<Item = &'a (&'a str, &'a str)>) -> Self {
+    pub fn from_pair_iterator<'a>(
+        iterator: impl Iterator<Item = &'a (&'a str, &'a str)>,
+    ) -> Result<Self, pest::error::Error<Rule>> {
         let mut aliases = Self::new();
         for &(k, v) in iterator {
-            aliases.set(String::from(k), ExpressionTree::from_line(v).unwrap());
+            let tree = ExpressionTree::from_line_with_aliases(v, &aliases)?;
+            aliases.set(String::from(k), tree);
         }
-        aliases
+        Ok(aliases)
     }
 
     /// Get an instance with [DEFAULT_ALIASES]
@@ -32,7 +43,7 @@ impl AliasStore {
     /// let aliases = AliasStore::with_defaults();
     /// ```
     pub fn with_defaults() -> Self {
-        Self::from_pair_iterator(DEFAULT_ALIASES.iter())
+        Self::from_pair_iterator(DEFAULT_ALIASES.iter()).expect("Failed to parse default aliases")
     }
 
     pub fn set(&mut self, name: String, expression: ExpressionTree) -> Option<ExpressionTree> {
