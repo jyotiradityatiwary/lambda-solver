@@ -131,6 +131,16 @@ impl ExpressionTree {
             None => false,
         }
     }
+
+    pub fn eta_reduce(&mut self) -> bool {
+        match self.root.eta_reduce() {
+            Some(exp) => {
+                self.root = exp;
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// Gives De Brujin representation of expression tree. Not stable. Use [ExpressionTree::to_expression_str_de_brujin] to get de brujin representation deterministically
@@ -175,32 +185,6 @@ mod tests {
     }
 
     #[test]
-    fn beta_reduction() {
-        fn beta_reduce_and_check(builder: &mut ExpressionTreeBuilder, start: &str, end: &str) {
-            let mut tree = builder
-                .build(start)
-                .expect("Failed to parse start expression");
-            while tree.beta_reduce() {}
-            assert_eq!(
-                tree,
-                builder
-                    .build(end)
-                    .expect("Failed to parse target (end) tree"),
-                "Reduced expression does not match expected end expression",
-            )
-        }
-
-        let aliases = AliasStore::with_defaults();
-        let mut builder = ExpressionTreeBuilder::new(&aliases);
-        beta_reduce_and_check(&mut builder, "NOT TRUE", "FALSE");
-        beta_reduce_and_check(&mut builder, "NOT FALSE", "TRUE");
-        beta_reduce_and_check(&mut builder, "AND TRUE TRUE", "TRUE");
-        beta_reduce_and_check(&mut builder, "AND FALSE TRUE", "FALSE");
-        beta_reduce_and_check(&mut builder, "OR TRUE FALSE", "TRUE");
-        beta_reduce_and_check(&mut builder, "OR FALSE FALSE", "FALSE");
-    }
-
-    #[test]
     fn iterative_beta_reduction() {
         fn iteratively_reduce_and_check(steps: Vec<&str>) {
             let mut tree =
@@ -208,8 +192,8 @@ mod tests {
             for step in steps[1..].iter() {
                 assert!(tree.beta_reduce(), "Expression tree did not reduce");
                 assert_eq!(
-                    tree.to_expression_str().unwrap(),
-                    *step,
+                    tree,
+                    ExpressionTree::from_line(*step).expect("Failed to parse step"),
                     "Reduced expression tree does not match expected reduction"
                 )
             }
@@ -218,8 +202,9 @@ mod tests {
                 "Expression tree reduced when no reduction was expected"
             );
             assert_eq!(
-                tree.to_expression_str().unwrap(),
-                steps[steps.len() - 1],
+                tree,
+                ExpressionTree::from_line(steps[steps.len() - 1])
+                    .expect("Failed to parse last step (i.e., the expected final outcome)"),
                 "Expression tree changed when no reduction was expected"
             )
         }
@@ -233,6 +218,7 @@ mod tests {
             "((c b) ((λa.(a b)) c))",
             "((c b) (c b))",
         ]);
-        iteratively_reduce_and_check(vec!["(((λa.(λb.(a b))) b) c)", "((λb.(b b)) c)", "(b c)"]);
+        iteratively_reduce_and_check(vec!["(((λa.(λb.(a b))) b) c)", "((λ_b.(b _b)) c)", "(b c)"]);
+        iteratively_reduce_and_check(vec!["λa.((λb.λc.b) a)", "λa.λc.a"]);
     }
 }

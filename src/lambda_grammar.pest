@@ -1,5 +1,7 @@
 WHITESPACE = _{ " " | "\n" | "\t" }
 
+number = @{ ASCII_DIGIT+ }
+
 // Variables can contain ASCII alphabets, numerical digits and underscores
 // but must not start with a digit
 variable_start = _{ ASCII_ALPHA | "_" }
@@ -18,6 +20,7 @@ atom                 = _{
     variable
   | bracketed_expression
   | abstraction
+  | number
 }
 
 root_expression =  { expression }

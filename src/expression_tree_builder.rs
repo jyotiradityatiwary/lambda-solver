@@ -90,16 +90,18 @@ impl<'a> ExpressionTreeBuilder<'a> {
     }
 
     fn node_from_pair(&mut self, pair: Pair<Rule>, lambda_depth: usize) -> Rc<ExpressionNode> {
-        let variable_name = pair.as_str();
         match pair.as_rule() {
-            Rule::variable => match self.bound_variables.get(variable_name) {
-                Some(binding_depth) => {
-                    Rc::new(ExpressionNode::BoundVariable(lambda_depth - binding_depth))
+            Rule::variable =>{
+                let variable_name = pair.as_str();
+                match self.bound_variables.get(variable_name) {
+                    Some(binding_depth) => {
+                        Rc::new(ExpressionNode::BoundVariable(lambda_depth - binding_depth))
+                    }
+                    None => match self.alias_store.get(variable_name) {
+                        Some(tree) => Rc::clone(&tree.root),
+                        None => Rc::new(ExpressionNode::FreeVariable(String::from(variable_name))),
+                    },
                 }
-                None => match self.alias_store.get(variable_name) {
-                    Some(tree) => Rc::clone(&tree.root),
-                    None => Rc::new(ExpressionNode::FreeVariable(String::from(variable_name))),
-                },
             },
             Rule::abstraction => {
                     let mut pairs = pair.into_inner();
@@ -115,6 +117,7 @@ impl<'a> ExpressionTreeBuilder<'a> {
             Rule::bracketed_expression => self
                 .node_from_pairs(pair.into_inner(), lambda_depth)
                 .expect("Matched bracketed expression must contain at least once variable or abstraction"),
+            Rule::number => build_numeral(pair.as_str().parse::<usize>().expect("Failed to implement number into usize")),
             Rule::parameters => unreachable!("Parameters matched in unexpected location. Should be the first match inside an abstraction"),
             Rule::root_expression => unreachable!("This function recieved a root expression match. The full string match will contain only one root expression match, whose inner pairs must be supploed to this impl's from_pairs function."),
             Rule::EOI
@@ -168,7 +171,23 @@ impl<'a> ExpressionTreeBuilder<'a> {
     }
 }
 
-// fn new(pair: Pair<'a, Rule>, lambda_depth: usize) -> Self {
-// }
+fn build_numeral(number: usize) -> Rc<ExpressionNode> {
+    fn recursive_application(number: usize) -> Rc<ExpressionNode> {
+        Rc::new(if number == 0 {
+            ExpressionNode::BoundVariable(1)
+        } else {
+            ExpressionNode::Application {
+                function: Rc::new(ExpressionNode::BoundVariable(2)),
+                argument: recursive_application(number - 1),
+            }
+        })
+    }
 
-// }
+    Rc::new(ExpressionNode::Abstraction {
+        parameter: String::from("f"),
+        body: Rc::new(ExpressionNode::Abstraction {
+            parameter: String::from("x"),
+            body: recursive_application(number),
+        }),
+    })
+}

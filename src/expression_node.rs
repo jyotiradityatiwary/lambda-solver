@@ -1,4 +1,4 @@
-use std::{fmt, rc::Rc};
+use std::{collections::HashMap, fmt, rc::Rc};
 
 use crate::{
     ExpressionNodeStringifierError,
@@ -63,35 +63,125 @@ impl ExpressionNode {
 
     fn _substitute(
         self: &Rc<Self>,
-        target_expr: &Rc<Self>,
+        arg_dbi_shifter: &mut ArgDbiShifter,
         relative_lambda_depth: usize,
     ) -> Rc<Self> {
         match self.as_ref() {
             ExpressionNode::FreeVariable(_) => Rc::clone(self),
             ExpressionNode::BoundVariable(idx) => {
-                if *idx == relative_lambda_depth {
-                    Rc::clone(target_expr)
-                } else {
-                    Rc::clone(self)
+                match idx.cmp(&relative_lambda_depth) {
+                    // idx < relative_lambda_depth
+                    // => This variable is bound to an abstraction that is
+                    // contained entirely within the abstraction being
+                    // beta-reduced
+                    // => No need to touch this
+                    std::cmp::Ordering::Less => Rc::clone(self),
+                    // idx == relative_lambda_depth
+                    // => This variable is bound to the abstraction being reduced
+                    // => Substitute here, with appropriate shifting of De
+                    //     Brujin's indices inside the argument expression
+                    std::cmp::Ordering::Equal => arg_dbi_shifter.shift(relative_lambda_depth),
+                    // idx > relative_lambda_depth
+                    // => This variable is bound to an abstraction outside the
+                    //    one being reduced.
+                    // => One less abstraction between this bound variable and
+                    //    it's abstraction after beta reduction is complete
+                    // => Reduce it's De Brujin Index by 1
+                    std::cmp::Ordering::Greater => Rc::new(ExpressionNode::BoundVariable(idx - 1)),
                 }
             }
             ExpressionNode::Application { function, argument } => {
                 Rc::new(ExpressionNode::Application {
-                    function: function._substitute(target_expr, relative_lambda_depth),
-                    argument: argument._substitute(target_expr, relative_lambda_depth),
+                    function: function._substitute(arg_dbi_shifter, relative_lambda_depth),
+                    argument: argument._substitute(arg_dbi_shifter, relative_lambda_depth),
                 })
             }
             ExpressionNode::Abstraction { parameter, body } => {
                 Rc::new(ExpressionNode::Abstraction {
                     parameter: parameter.clone(),
-                    body: body._substitute(target_expr, relative_lambda_depth + 1),
+                    body: body._substitute(arg_dbi_shifter, relative_lambda_depth + 1),
                 })
             }
         }
     }
 
     fn substitute(self: &Rc<Self>, target_expr: &Rc<Self>) -> Rc<Self> {
-        self._substitute(target_expr, 1)
+        let mut db_index_shifter = ArgDbiShifter::new(target_expr);
+        self._substitute(&mut db_index_shifter, 1)
+    }
+
+    pub fn eta_reduce(&self) -> Option<Rc<Self>> {
+        match self {
+            ExpressionNode::FreeVariable(_) => None,
+            ExpressionNode::BoundVariable(_) => None,
+            ExpressionNode::Application { function, argument } => match function.eta_reduce() {
+                Some(reduced_function) => Some(Rc::new(ExpressionNode::Application {
+                    function: reduced_function,
+                    argument: Rc::clone(argument),
+                })),
+                None => argument.eta_reduce().map(|reduced_argument| {
+                    Rc::new(ExpressionNode::Application {
+                        function: Rc::clone(function),
+                        argument: reduced_argument,
+                    })
+                }),
+            },
+            ExpressionNode::Abstraction { parameter, body } => {
+                if let ExpressionNode::Application { function, argument } = body.as_ref() {
+                    if let ExpressionNode::BoundVariable(db_index) = argument.as_ref() {
+                        if *db_index == 1 {
+                            return function.shift_for_eta_if_independent(1);
+                        }
+                    }
+                }
+                body.eta_reduce().map(|reduced_body| {
+                    Rc::new(ExpressionNode::Abstraction {
+                        parameter: parameter.clone(),
+                        body: reduced_body,
+                    })
+                })
+            }
+        }
+    }
+
+    /// Returns an appropriately shifted expression for eta reduction if the
+    /// given expression (`self`) is independent of it's parent abstraction,
+    /// else returns [None]
+    fn shift_for_eta_if_independent(
+        self: &Rc<Self>,
+        relative_lambda_depth: usize,
+    ) -> Option<Rc<ExpressionNode>> {
+        match self.as_ref() {
+            ExpressionNode::FreeVariable(_) => Some(Rc::clone(self)),
+            ExpressionNode::BoundVariable(db_index) => match db_index.cmp(&relative_lambda_depth) {
+                std::cmp::Ordering::Less => Some(Rc::clone(&self)),
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Greater => {
+                    Some(Rc::new(ExpressionNode::BoundVariable(db_index - 1)))
+                }
+            },
+            ExpressionNode::Application { function, argument } => {
+                match function.shift_for_eta_if_independent(relative_lambda_depth) {
+                    Some(reduced_function) => argument
+                        .shift_for_eta_if_independent(relative_lambda_depth)
+                        .map(|reduced_argument| {
+                            Rc::new(ExpressionNode::Application {
+                                function: reduced_function,
+                                argument: reduced_argument,
+                            })
+                        }),
+                    None => None,
+                }
+            }
+            ExpressionNode::Abstraction { parameter, body } => body
+                .shift_for_eta_if_independent(relative_lambda_depth + 1)
+                .map(|shifted_body| {
+                    Rc::new(ExpressionNode::Abstraction {
+                        parameter: parameter.clone(),
+                        body: shifted_body,
+                    })
+                }),
+        }
     }
 }
 
@@ -135,6 +225,149 @@ impl PartialEq for ExpressionNode {
 }
 
 impl Eq for ExpressionNode {}
+
+enum ArgDbiShifterState {
+    Unknown,
+    NoBoundVariables,
+    HasBoundVariables {
+        relative_idx_to_shifted_tree: HashMap<usize, Rc<ExpressionNode>>,
+    },
+}
+
+/// Argument "DBI" (De Brujin Index) Shifter
+///
+/// To shift the "DBI" of externally bound variables in an argument. See more
+/// about externally bound variables in the documentation of
+/// [search_exbv_and_shift]
+struct ArgDbiShifter<'a> {
+    target_node: &'a Rc<ExpressionNode>,
+    state: ArgDbiShifterState,
+}
+
+impl<'a> ArgDbiShifter<'a> {
+    fn new(target_node: &'a Rc<ExpressionNode>) -> Self {
+        Self {
+            target_node,
+            state: ArgDbiShifterState::Unknown,
+        }
+    }
+
+    fn shift(&mut self, current_relative_lambda_depth: usize) -> Rc<ExpressionNode> {
+        debug_assert!(current_relative_lambda_depth != 0, "Relative index is zero");
+        match &mut self.state {
+            ArgDbiShifterState::Unknown => {
+                if current_relative_lambda_depth == 1 {
+                    Rc::clone(self.target_node)
+                } else {
+                    match search_exbv_and_shift(self.target_node, current_relative_lambda_depth, 0)
+                    {
+                        Some(shifted_tree) => {
+                            let mut map = HashMap::new();
+                            map.insert(current_relative_lambda_depth, Rc::clone(&shifted_tree));
+                            self.state = ArgDbiShifterState::HasBoundVariables {
+                                relative_idx_to_shifted_tree: map,
+                            };
+                            shifted_tree
+                        }
+                        None => {
+                            self.state = ArgDbiShifterState::NoBoundVariables;
+                            Rc::clone(self.target_node)
+                        }
+                    }
+                }
+            }
+            ArgDbiShifterState::NoBoundVariables => Rc::clone(self.target_node),
+            ArgDbiShifterState::HasBoundVariables {
+                relative_idx_to_shifted_tree,
+            } => {
+                let tree = relative_idx_to_shifted_tree.entry(current_relative_lambda_depth).or_insert_with(
+                    || search_exbv_and_shift(
+                        self.target_node,
+                        current_relative_lambda_depth,
+                        0
+                    ).expect(
+                        "DbIndexShifterState is set to HasBoundVariable but searching yielded no externally bound variables"
+                    )
+                );
+                Rc::clone(tree)
+            }
+        }
+    }
+}
+
+/// Search `exbv` ("externally bound variables") and shift the De Brujin's index
+/// of each exbv relative to the lambda depth at the substitution site so that
+/// the binding does not change.
+///
+/// A [ExpressionNode::BoundVariable] is externally bound if it's De Brujin's
+/// index is greater than it's relative lambda depth (number of nested
+/// abstractions it is contained in, relative to the given target node in
+/// [Self::new])
+///
+/// ## Parameters:
+/// * `node`: the node we are searching and shifting
+/// * `rld_ss`: Relative lambda depth of substitution site inside the abstraction (inclusive of this abstraction). Equal to the De Brujin's index of the bound variable being substituted.
+/// * `rld_node`: Relative lambda depth of node (the parameter to this function) inside the target node (argument expression)
+///
+/// ## Returns:
+/// * Option:
+///     * Some(tree): If the subtree did contain externally bound variables, an appropriately shifted tree is returned
+///     * None: If the tree did not contain bound variables, `None` which means that the subtree should be placed 'as-is' at the substitution site
+fn search_exbv_and_shift(
+    node: &Rc<ExpressionNode>,
+    rld_ss: usize,
+    rld_node: usize,
+) -> Option<Rc<ExpressionNode>> {
+    debug_assert!(
+        rld_ss != 0,
+        "Unexpectedd value of rld_ss (Relative lambda depth of substitution site inside the abstraction being beta reduced). Substitution site must lie inside at least one abstraction."
+    );
+    debug_assert!(
+        rld_ss != 1,
+        "Shift and search called when the substitution site is under only one abstraction (the one it is being substituted into). No need for shifting."
+    );
+    match node.as_ref() {
+        ExpressionNode::FreeVariable(_) => None,
+        ExpressionNode::BoundVariable(db_idx) => {
+            let is_externally_bound = *db_idx > rld_node;
+            if is_externally_bound {
+                Some(Rc::new(ExpressionNode::BoundVariable({
+                    // how far externally bound this variable is? (i.e.
+                    // this maps to which lambda abstraction, relative
+                    // to the root of the target expressio
+                    let externality_offset = *db_idx - rld_node;
+                    // we need to shift by one less than the relative
+                    // lambda depth of the expression being substituted
+                    let shift_idx = rld_ss - 1;
+
+                    externality_offset + shift_idx
+                })))
+            } else {
+                None
+            }
+        }
+        ExpressionNode::Application { function, argument } => {
+            let shifted_function = search_exbv_and_shift(function, rld_ss, rld_node);
+            let shifted_argument = search_exbv_and_shift(argument, rld_ss, rld_node);
+            if shifted_function.is_some() || shifted_argument.is_some() {
+                Some(Rc::new(ExpressionNode::Application {
+                    function: shifted_function.unwrap_or_else(|| Rc::clone(function)),
+                    argument: shifted_argument.unwrap_or_else(|| Rc::clone(argument)),
+                }))
+            } else {
+                None
+            }
+        }
+        ExpressionNode::Abstraction { parameter, body } => {
+            search_exbv_and_shift(body, rld_ss, rld_node + 1).map(|shifted_body| {
+                Rc::new(ExpressionNode::Abstraction {
+                    parameter: parameter.clone(),
+                    body: shifted_body,
+                })
+            })
+        }
+    }
+}
 
 #[cfg(test)]
 mod test {
