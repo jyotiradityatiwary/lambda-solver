@@ -254,8 +254,8 @@ mod test {
         let mut builder = ExpressionTreeBuilder::new(&aliases);
 
         beta_reduce_and_check(&mut builder, "PRED 1", "0");
-        // beta_reduce_and_check(&mut builder, "PRED 3", "2");
-        // beta_reduce_and_check(&mut builder, "PRED 0", "0"); // underflow case
+        beta_reduce_and_check(&mut builder, "PRED 3", "2");
+        beta_reduce_and_check(&mut builder, "PRED 0", "0"); // underflow case
     }
 
     #[test]

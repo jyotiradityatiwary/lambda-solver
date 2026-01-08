@@ -28,7 +28,6 @@ cargo test
 
 ## Todo
 
-- Builtin aliases `PRED` and `SUB` do not work. corresponding failing unit tests - `alias::test::pred` and `alias::test::sub`
 - Allow reversing expressions into aliases (Right now, we can only expand named aliases into full expression trees)
 - Add usage examples to project level rustdoc
 - Add an Iterator wrapper for `ExpressionTree::beta_reduce` and `ExpressionTree::eta_reduce`

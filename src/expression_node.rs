@@ -61,6 +61,16 @@ impl ExpressionNode {
         }
     }
 
+    /// Substitute inside `self` using an [ArgDbiShifter], where `self` is
+    /// inside the body of an abstraction, at a `relative_lambda_depth`
+    ///
+    /// `relative_lambda_depth == N` => `self` is inside `N` abstractions within
+    /// the body of the abstraction being applied (substituted into). Starts at
+    /// 0.
+    ///
+    /// `arg_dbi_shifter` contains the target node, alongwith re-usable
+    /// intermediate steps that may be required for shifting de-brujin-indices
+    /// within that target node
     fn _substitute(
         self: &Rc<Self>,
         arg_dbi_shifter: &mut ArgDbiShifter,
@@ -105,6 +115,7 @@ impl ExpressionNode {
         }
     }
 
+    /// Substitute the `target_expr` (target expression) inside `self` (which is expected to be the body of an abstraction being applied)
     fn substitute(self: &Rc<Self>, target_expr: &Rc<Self>) -> Rc<Self> {
         let mut db_index_shifter = ArgDbiShifter::new(target_expr);
         self._substitute(&mut db_index_shifter, 1)
@@ -324,24 +335,18 @@ fn search_exbv_and_shift(
     );
     debug_assert!(
         rld_ss != 1,
-        "Shift and search called when the substitution site is under only one abstraction (the one it is being substituted into). No need for shifting."
+        "Search and shift called when the substitution site is under only one abstraction (the one it is being substituted into). No need for shifting."
     );
     match node.as_ref() {
         ExpressionNode::FreeVariable(_) => None,
         ExpressionNode::BoundVariable(db_idx) => {
             let is_externally_bound = *db_idx > rld_node;
             if is_externally_bound {
-                Some(Rc::new(ExpressionNode::BoundVariable({
-                    // how far externally bound this variable is? (i.e.
-                    // this maps to which lambda abstraction, relative
-                    // to the root of the target expressio
-                    let externality_offset = *db_idx - rld_node;
-                    // we need to shift by one less than the relative
-                    // lambda depth of the expression being substituted
-                    let shift_idx = rld_ss - 1;
-
-                    externality_offset + shift_idx
-                })))
+                // We need to increase the DeBrujin index of this variable by
+                // one less than the relative lambda depth of the substitution
+                // site One less because the abstraction that is being currently
+                // reduced will be removed
+                Some(Rc::new(ExpressionNode::BoundVariable(*db_idx + rld_ss - 1)))
             } else {
                 None
             }
