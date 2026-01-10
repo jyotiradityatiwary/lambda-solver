@@ -115,7 +115,66 @@ impl AliasStore {
 ///         * else returns `0`.
 ///     * It performs n applications of the `PRED` function to m
 ///     * Usage: `SUB 5 3` evaluates to `2`.
-pub const DEFAULT_ALIASES: [(&str, &str); 12] = [
+///
+/// ## Comparison Aliases
+///
+/// * **ISZERO**: `λn.n (λx.FALSE) TRUE`
+///     * **Is Zero**. It takes a single Church numeral argument `n` and :
+///         * if `n > 0`: returns `FALSE`.
+///         * else (`n == 0`): returns `TRUE`.
+///     * Usage: `ISZERO 0` evaluates to `TRUE`.
+///     * Extensions: Can be used with the `NOT` operator to check if a numeral is not zero. For example, `NOT (ISZERO 0)` evaluates to `FALSE`.
+/// * **LEQ**: `λm.λn.ISZERO (SUB m n)`
+///     * **Less than or Equal to**. It takes two Church numerals `m` and `n`, and :
+///         * if `m <= n`: returns `TRUE`.
+///         * else (i.e. `m > n`) returns `FALSE`.
+///     * Usage: `LEQ 1 2` evaluates to `TRUE`.
+///     * Extensions:
+///         * Greater than or equal to: Same functionality can be acheived by reversing the order of arguments and using `LEQ`, since `a >= b <=> b <= a`. So, for example, to check if `2 > 1`, use `LEQ 1 2`.
+///         * Greater than: `a > b <=> NOT (a <= b)`. For example, to check if `2 > 1`, use `NOT (LEQ 2 1)`.
+///         * Less than: Same as greater than, with reversed order of arguments. For example, to check `1 < 2`, use `NOT (LEQ 2 1)`.
+///
+/// ## Pair Aliases
+///
+/// * **PAIR**: `λx.λy.λf.f x y`
+///     * **Pair** encapsulates a tuple of 2 values. For example, `PAIR 1 2`.
+///     * Use handler functions `FIRST` and `SECOND` to extract values from a `PAIR` instance.
+///     * Can be chained to build a linked list.
+/// * **FIRST**: `λp.p (λx.λy.x)`
+///     * **First** returns the first element of a pair.
+///     * Usage: `FIRST (PAIR 1 2)` evaluates to `1`.
+/// * **SECOND**: `λp.p (λx.λy.y)`
+///     * **Second** returns the second element of a pair.
+///     * Usage: `SECOND (PAIR 1 2)` evaluates to `2`.
+///
+/// ## Linked List Aliases
+///
+/// Linked lists can be built by chaining `PAIR`s, with a `NIL` to indicate the
+/// end of the list. For example, `PAIR 1 (PAIR 2 (PAIR 3 (PAIR 4 (PAIR 5 (PAIR
+/// 6 NIL)))))` represents the linked list: `1, 2, 3, 4, 5, 6`.
+///
+/// To access an element at index `i` (where `i` is any Church numeral such that
+/// `0 <= i < size_of_list`), in a linked list `l`, we can use `FIRST (i SECOND
+/// l)`. So, for example, `FIRST (3 SECOND (PAIR 1 (PAIR 2 (PAIR 3 (PAIR 4 (PAIR
+/// 5 (PAIR 6 NIL)))))))` evaluates to `4` (which is the 4th element of the
+/// linked list). Note that using this method for indexing implies that the
+/// linked list is zero-indexed (i.e. the first element corresponds to `i=0`)
+///
+/// * **NIL**: `λf.TRUE`
+///     * **Nil** is used to represent an empty linked list (or the end of a linked list).
+/// * **NULL**: `λp.p (λx.λy.FALSE)`
+///     * **Null** is used to check for an empty linked list.
+///     * Usage: `NULL (6 SECOND (PAIR 1 (PAIR 2 (PAIR 3 (PAIR 4 (PAIR 5 (PAIR 6 NIL)))))))` evaluates to `TRUE`.
+///
+/// ## Recursive Aliases
+///
+/// * **Y**: `λf.(λx.f (x x)) (λx.f (x x))`
+///     * **Y Combinator**: enables recursion in pure lambda calculus by computing a fixed point of a function: `Y F → F (Y F)`.
+///     * Usage: See definition of `FACTORIAL`
+/// * **FACTORIAL**: `Y (λf.λn.ISZERO n 1 (MULT n (f (PRED n))))`
+///     * **Factorial** corresponds to the mathematical factorial function: `Factorial(n) = n * Factorial(n - 1)` for `n > 0` and `Factorial(0) = 1`
+///     * Usage: `FACTORIAL 5` evaluates to `120`
+pub const DEFAULT_ALIASES: [(&str, &str); 21] = [
     // Logic
     ("TRUE", "λx.λy.x"),
     ("FALSE", "λx.λy.y"),
@@ -130,6 +189,27 @@ pub const DEFAULT_ALIASES: [(&str, &str); 12] = [
     ("POW", "λb.λn.n b"),
     ("PRED", "λn.λf.λx.n (λg.λh.h (g f)) (λu.x) (λu.u)"),
     ("SUB", "λm.λn.n PRED m"),
+    // Comparison
+    ("ISZERO", "λn.n (λx.FALSE) TRUE"),
+    ("LEQ", "λm.λn.ISZERO (SUB m n)"),
+    // Pairs
+    ("PAIR", "λx.λy.λf.f x y"),
+    ("FIRST", "λp.p (λx.λy.x)"),
+    ("SECOND", "λp.p (λx.λy.y)"),
+    // Linked list
+    ("NIL", "λf.TRUE"),
+    ("NULL", "λp.p (λx.λy.FALSE)"),
+    // Recursive
+    ("Y", "λf.(λx.f (x x)) (λx.f (x x))"),
+    (
+        "FACTORIAL",
+        "Y (
+            λf.λn.
+                ISZERO n
+                1
+                (MULT n (f (PRED n)))
+        )",
+    ),
 ];
 
 #[cfg(test)]
@@ -266,5 +346,88 @@ mod test {
         beta_reduce_and_check(&mut builder, "SUB 5 2", "3");
         beta_reduce_and_check(&mut builder, "SUB 5 5", "0");
         beta_reduce_and_check(&mut builder, "SUB 2 5", "0"); // underflow case
+    }
+
+    #[test]
+    fn iszero() {
+        let aliases = AliasStore::with_defaults();
+        let mut builder = ExpressionTreeBuilder::new(&aliases);
+
+        beta_reduce_and_check(&mut builder, "ISZERO 0", "TRUE");
+        beta_reduce_and_check(&mut builder, "ISZERO 1", "FALSE");
+        beta_reduce_and_check(&mut builder, "ISZERO 8", "FALSE");
+        beta_reduce_and_check(&mut builder, "ISZERO 5", "FALSE");
+    }
+
+    #[test]
+    fn leq() {
+        let aliases = AliasStore::with_defaults();
+        let mut builder = ExpressionTreeBuilder::new(&aliases);
+
+        beta_reduce_and_check(&mut builder, "LEQ 5 5", "TRUE");
+        beta_reduce_and_check(&mut builder, "LEQ 3 10", "TRUE");
+        beta_reduce_and_check(&mut builder, "LEQ 0 0", "TRUE");
+        beta_reduce_and_check(&mut builder, "LEQ 1 0", "FALSE");
+        beta_reduce_and_check(&mut builder, "LEQ 10 5", "FALSE");
+    }
+
+    #[test]
+    fn pair() {
+        let aliases = AliasStore::with_defaults();
+        let mut builder = ExpressionTreeBuilder::new(&aliases);
+
+        beta_reduce_and_check(&mut builder, "FIRST (PAIR 1 2)", "1");
+        beta_reduce_and_check(&mut builder, "SECOND (PAIR 3 0)", "0");
+        beta_reduce_and_check(
+            &mut builder,
+            "FIRST (SECOND (PAIR (PAIR 1 2) (PAIR 3 4)))",
+            "3",
+        );
+    }
+
+    #[test]
+    fn linked_list() {
+        let aliases = AliasStore::with_defaults();
+        let mut builder = ExpressionTreeBuilder::new(&aliases);
+
+        beta_reduce_and_check(&mut builder, "NULL NIL", "TRUE");
+        beta_reduce_and_check(&mut builder, "NULL (PAIR 1 NIL)", "FALSE");
+        beta_reduce_and_check(
+            &mut builder,
+            "FIRST (4 SECOND (PAIR 1 (PAIR 2 (PAIR 3 (PAIR 4 (PAIR 5 (PAIR 6 NIL)))))))",
+            "5",
+        );
+        beta_reduce_and_check(
+            &mut builder,
+            "FIRST (0 SECOND (PAIR 1 (PAIR 2 (PAIR 3 (PAIR 4 (PAIR 5 (PAIR 6 NIL)))))))",
+            "1",
+        );
+        beta_reduce_and_check(
+            &mut builder,
+            "FIRST (3 SECOND (PAIR 1 (PAIR 2 (PAIR 3 (PAIR 4 (PAIR 5 (PAIR 6 NIL)))))))",
+            "4",
+        );
+        beta_reduce_and_check(
+            &mut builder,
+            "NULL (3 SECOND (PAIR 1 (PAIR 2 (PAIR 3 (PAIR 4 (PAIR 5 (PAIR 6 NIL)))))))",
+            "FALSE",
+        );
+        beta_reduce_and_check(
+            &mut builder,
+            "NULL (6 SECOND (PAIR 1 (PAIR 2 (PAIR 3 (PAIR 4 (PAIR 5 (PAIR 6 NIL)))))))",
+            "TRUE",
+        );
+    }
+
+    #[test]
+    fn factorial() {
+        let aliases = AliasStore::with_defaults();
+        let mut builder = ExpressionTreeBuilder::new(&aliases);
+
+        beta_reduce_and_check(&mut builder, "FACTORIAL 0", "1");
+        beta_reduce_and_check(&mut builder, "FACTORIAL 1", "1");
+        beta_reduce_and_check(&mut builder, "FACTORIAL 2", "2");
+        beta_reduce_and_check(&mut builder, "FACTORIAL 3", "6");
+        beta_reduce_and_check(&mut builder, "FACTORIAL 5", "120");
     }
 }
